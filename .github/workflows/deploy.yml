@@ -15,7 +15,7 @@ env:
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
-    environment: Prod
+    environment: AKSDEPLOY
     
     steps:
     - name: 🛒 Checkout code
@@ -76,3 +76,19 @@ jobs:
         
         EXTERNAL_IP=$(kubectl get service aks-predictor-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
         echo "🌍 Dashboard URL: http://$EXTERNAL_IP"
+
+    - name: 🧪 Health check
+      run: |
+        EXTERNAL_IP=$(kubectl get service aks-predictor-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+        if [ -n "$EXTERNAL_IP" ]; then
+          echo "Testing health endpoint..."
+          for i in {1..30}; do
+            if curl -f "http://$EXTERNAL_IP/health" > /dev/null 2>&1; then
+              echo "✅ Health check passed!"
+              echo "🌍 Dashboard available at: http://$EXTERNAL_IP"
+              break
+            fi
+            echo "⏳ Waiting for service to be ready... ($i/30)"
+            sleep 10
+          done
+        fi
