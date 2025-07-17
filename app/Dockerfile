@@ -1,37 +1,77 @@
-FROM python:3.11-slim
+name: Deploy AKS Predictor
 
-# Instalar dependências do sistema
-RUN apt-get update && apt-get install -y \
-    curl \
-    wget \
-    gnupg \
-    lsb-release \
-    && rm -rf /var/lib/apt/lists/*
+on:
+  workflow_dispatch:  # Manual trigger
 
-# Instalar kubectl
-RUN curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" \
-    && chmod +x kubectl \
-    && mv kubectl /usr/local/bin/
+env:
+  RESOURCE_GROUP: rg-aks-predictor
+  AKS_CLUSTER: aks-predictor-cluster
+  ACR_NAME: acrpredictorlab13224
+  APP_NAME: aks-predictor
+  LOCATION: eastus
 
-# Configurar diretório de trabalho
-WORKDIR /app
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    environment: AKSDEPLOY
+    
+    steps:
+    - name: 🛒 Checkout code
+      uses: actions/checkout@v4
 
-# Copiar requirements e instalar dependências Python
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+    - name: 🔐 Azure Login
+      uses: azure/login@v1
+      with:
+        creds: |
+          {
+            "clientId": "${{ secrets.CLIENT_ID }}",
+            "clientSecret": "${{ secrets.CLIENT_SECRET }}",
+            "subscriptionId": "${{ secrets.SUBSCRIPTION_ID }}",
+            "tenantId": "${{ secrets.TENANT_ID }}"
+          }
 
-# Copiar código da aplicação
-COPY . .
+    - name: 🏗️ Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
 
-# Criar diretórios necessários
-RUN mkdir -p templates static results
+    - name: 📦 Login to ACR
+      run: |
+        az acr login --name ${{ env.ACR_NAME }}
 
-# Expor porta
-EXPOSE 5000
+    - name: 🏷️ Generate image tag
+      id: image-tag
+      run: |
+        echo "tag=v${{ github.run_number }}" >> $GITHUB_OUTPUT
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:5000/health || exit 1
+    - name: 🐳 Build and push Docker image
+      run: |
+        # Build from app directory where Dockerfile is located
+        docker build -f app/Dockerfile -t ${{ env.ACR_NAME }}.azurecr.io/${{ env.APP_NAME }}:${{ steps.image-tag.outputs.tag }} app/
+        docker push ${{ env.ACR_NAME }}.azurecr.io/${{ env.APP_NAME }}:${{ steps.image-tag.outputs.tag }}
 
-# Comando para executar a aplicação
-CMD ["python", "app.py"]
+    - name: ☸️ Setup kubectl
+      uses: azure/setup-kubectl@v3
+
+    - name: 🔗 Get AKS credentials
+      run: |
+        az aks get-credentials --resource-group ${{ env.RESOURCE_GROUP }} --name ${{ env.AKS_CLUSTER }} --overwrite-existing
+
+    - name: 🚀 Deploy to AKS
+      run: |
+        # Replace placeholders in deployment
+        sed -i "s|IMAGE_TAG|${{ steps.image-tag.outputs.tag }}|g" k8s-deployment.yaml
+        sed -i "s|ACR_NAME|${{ env.ACR_NAME }}|g" k8s-deployment.yaml
+        
+        # Apply Kubernetes manifests
+        kubectl apply -f k8s-deployment.yaml
+        
+        # Wait for rollout
+        kubectl rollout status deployment/aks-predictor-dashboard --timeout=300s
+
+    - name: 📊 Get deployment info
+      run: |
+        echo "🎉 Deployment completed!"
+        kubectl get pods -l app=aks-predictor
+        kubectl get service aks-predictor-service
+        
+        EXTERNAL_IP=$(kubectl get service aks-predictor-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+        echo "🌍 Dashboard URL: http://$EXTERNAL_IP"
