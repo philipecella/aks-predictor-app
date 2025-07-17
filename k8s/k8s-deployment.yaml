@@ -38,7 +38,6 @@ metadata:
   name: aks-predictor-dashboard
   labels:
     app: aks-predictor
-    version: "IMAGE_TAG"
 spec:
   replicas: 1
   selector:
@@ -48,7 +47,6 @@ spec:
     metadata:
       labels:
         app: aks-predictor
-        version: "IMAGE_TAG"
     spec:
       serviceAccountName: aks-predictor
       containers:
@@ -80,11 +78,6 @@ spec:
             port: 5000
           initialDelaySeconds: 10
           periodSeconds: 10
-        securityContext:
-          allowPrivilegeEscalation: false
-          readOnlyRootFilesystem: false
-          runAsNonRoot: true
-          runAsUser: 1000
 ---
 apiVersion: v1
 kind: Service
@@ -98,6 +91,5 @@ spec:
   - port: 80
     targetPort: 5000
     protocol: TCP
-    name: http
   selector:
     app: aks-predictor
