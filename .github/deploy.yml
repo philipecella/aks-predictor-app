@@ -1,0 +1,104 @@
+name: Deploy AKS Predictor
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:  # Manual trigger
+
+env:
+  RESOURCE_GROUP: rg-aks-predictor
+  AKS_CLUSTER: aks-predictor-cluster
+  ACR_NAME: acrpredictorlab13224  # Your ACR name
+  APP_NAME: aks-predictor
+  LOCATION: eastus
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    environment: Prod
+    
+    steps:
+    - name: 🛒 Checkout code
+      uses: actions/checkout@v4
+
+    - name: 🔐 Azure Login
+      uses: azure/login@v1
+      with:
+        creds: |
+          {
+            "clientId": "${{ secrets.CLIENT_ID }}",
+            "clientSecret": "${{ secrets.CLIENT_SECRET }}",
+            "subscriptionId": "${{ secrets.SUBSCRIPTION_ID }}",
+            "tenantId": "${{ secrets.TENANT_ID }}"
+          }
+
+    - name: 🏗️ Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: 📦 Login to ACR
+      run: |
+        az acr login --name ${{ env.ACR_NAME }}
+
+    - name: 🏷️ Generate image tag
+      id: image-tag
+      run: |
+        if [ "${{ github.event_name }}" == "pull_request" ]; then
+          echo "tag=pr-${{ github.event.number }}" >> $GITHUB_OUTPUT
+        else
+          echo "tag=v${{ github.run_number }}" >> $GITHUB_OUTPUT
+        fi
+
+    - name: 🐳 Build and push Docker image
+      run: |
+        cd app
+        docker build -t ${{ env.ACR_NAME }}.azurecr.io/${{ env.APP_NAME }}:${{ steps.image-tag.outputs.tag }} .
+        docker push ${{ env.ACR_NAME }}.azurecr.io/${{ env.APP_NAME }}:${{ steps.image-tag.outputs.tag }}
+
+    - name: ☸️ Setup kubectl
+      uses: azure/setup-kubectl@v3
+      with:
+        version: 'latest'
+
+    - name: 🔗 Get AKS credentials
+      run: |
+        az aks get-credentials --resource-group ${{ env.RESOURCE_GROUP }} --name ${{ env.AKS_CLUSTER }} --overwrite-existing
+
+    - name: 🚀 Deploy to AKS
+      run: |
+        # Replace image tag in deployment
+        sed -i "s|IMAGE_TAG|${{ steps.image-tag.outputs.tag }}|g" k8s/deployment.yaml
+        sed -i "s|ACR_NAME|${{ env.ACR_NAME }}|g" k8s/deployment.yaml
+        
+        # Apply Kubernetes manifests
+        kubectl apply -f k8s/deployment.yaml
+        
+        # Wait for rollout
+        kubectl rollout status deployment/aks-predictor-dashboard --timeout=300s
+
+    - name: 📊 Get deployment info
+      run: |
+        echo "🎉 Deployment completed!"
+        echo "📱 Pods:"
+        kubectl get pods -l app=aks-predictor
+        echo "🌐 Service:"
+        kubectl get service aks-predictor-service
+        echo "🔗 External IP:"
+        kubectl get service aks-predictor-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
+
+    - name: 🧪 Health check
+      run: |
+        EXTERNAL_IP=$(kubectl get service aks-predictor-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+        if [ -n "$EXTERNAL_IP" ]; then
+          echo "Testing health endpoint..."
+          for i in {1..30}; do
+            if curl -f "http://$EXTERNAL_IP/health" > /dev/null 2>&1; then
+              echo "✅ Health check passed!"
+              echo "🌍 Dashboard available at: http://$EXTERNAL_IP"
+              break
+            fi
+            echo "⏳ Waiting for service to be ready... ($i/30)"
+            sleep 10
+          done
+        fi
