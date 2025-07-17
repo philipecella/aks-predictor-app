@@ -58,11 +58,11 @@ jobs:
     - name: 🚀 Deploy to AKS
       run: |
         # Replace placeholders in deployment
-        sed -i "s|IMAGE_TAG|${{ steps.image-tag.outputs.tag }}|g" k8s-deployment.yaml
-        sed -i "s|ACR_NAME|${{ env.ACR_NAME }}|g" k8s-deployment.yaml
+        sed -i "s|IMAGE_TAG|${{ steps.image-tag.outputs.tag }}|g" k8s/k8s-deployment.yaml
+        sed -i "s|ACR_NAME|${{ env.ACR_NAME }}|g" k8s/k8s-deployment.yaml
         
         # Apply Kubernetes manifests
-        kubectl apply -f k8s-deployment.yaml
+        kubectl apply -f k8s/k8s-deployment.yaml
         
         # Wait for rollout
         kubectl rollout status deployment/aks-predictor-dashboard --timeout=300s
